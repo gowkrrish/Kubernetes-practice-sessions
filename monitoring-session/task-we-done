@@ -1,0 +1,391 @@
+Perfect idea ✅ — this is exactly how real DevOps engineers document their work.
+
+Below is a **complete, clean, content-wise documentation** of **everything you did**, including:
+
+* What you installed
+* Why you installed it
+* Errors you faced
+* How you fixed them
+* Final architecture
+
+You can copy this into Word / Notion / Notes as your **future reference document**.
+
+---
+
+# 📘 Kubernetes Monitoring Setup on Minikube
+
+**Using cAdvisor, Node Exporter, Prometheus & Grafana**
+
+## 1. Objective
+
+To set up a complete Kubernetes monitoring stack in **Minikube** using:
+
+* **cAdvisor** – for container level metrics
+* **Node Exporter** – for node (VM/host) level metrics
+* **Prometheus** – for scraping and storing metrics
+* **Grafana** – for visual dashboards
+
+This setup is used in **real production environments** to monitor Kubernetes clusters.
+
+---
+
+## 2. Architecture Diagram (Concept)
+
+```
+Pods / Containers / Node
+        ↓
+cAdvisor + Node Exporter
+        ↓
+     Prometheus
+        ↓
+      Grafana
+```
+
+Flow:
+
+* cAdvisor + Node Exporter → send metrics
+* Prometheus → scrapes metrics
+* Grafana → visualizes them
+
+---
+
+## 3. Installation Sequence (Order)
+
+1. Minikube + kubectl
+2. cAdvisor
+3. Node Exporter
+4. Prometheus
+5. Grafana
+
+This order is important.
+
+---
+
+## 4. cAdvisor Setup
+
+### Why cAdvisor?
+
+It collects container-related metrics like:
+
+* CPU usage per container
+* Memory usage
+* Network IO
+* Disk usage
+
+### Files created:
+
+#### `cadvisor-deploy.yaml`
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cadvisor
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cadvisor
+  template:
+    metadata:
+      labels:
+        app: cadvisor
+    spec:
+      containers:
+      - name: cadvisor
+        image: gcr.io/cadvisor/cadvisor:v0.47.2
+        ports:
+        - containerPort: 8080
+```
+
+#### `cadvisor-svc.yaml`
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: cadvisor-service
+  namespace: kube-system
+spec:
+  selector:
+    app: cadvisor
+  ports:
+  - port: 8080
+    targetPort: 8080
+```
+
+### Applied:
+
+```bash
+kubectl apply -f cadvisor-deploy.yaml
+kubectl apply -f cadvisor-svc.yaml
+```
+
+Final Service:
+
+```
+cadvisor-service.kube-system.svc.cluster.local:8080
+```
+
+---
+
+## 5. Node Exporter Setup
+
+### Why Node Exporter?
+
+It collects **node level stats** such as:
+
+* CPU usage
+* RAM usage
+* Disk space
+* Network traffic
+
+Used by Prometheus for infrastructure monitoring.
+
+### Files created:
+
+#### `node-exporter.yaml`
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node-exporter
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: node-exporter
+  template:
+    metadata:
+      labels:
+        app: node-exporter
+    spec:
+      containers:
+      - name: node-exporter
+        image: prom/node-exporter
+        ports:
+        - containerPort: 9100
+```
+
+#### `node-exporter-svc.yaml`
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter
+  namespace: kube-system
+spec:
+  selector:
+    app: node-exporter
+  ports:
+  - port: 9100
+    targetPort: 9100
+```
+
+---
+
+## 6. Prometheus Setup
+
+### Why Prometheus?
+
+* Collects metrics
+* Stores them
+* Makes them available to Grafana
+
+### Main file: `prometheus-config.yaml`
+
+```yaml
+scrape_configs:
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor-service.kube-system.svc.cluster.local:8080']
+
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter.kube-system.svc.cluster.local:9100']
+```
+
+Applied:
+
+```bash
+kubectl apply -f prometheus-config.yaml
+kubectl rollout restart deployment prometheus
+```
+
+Final working URLs inside cluster:
+
+| Service       | URL                                                 |
+| ------------- | --------------------------------------------------- |
+| cAdvisor      | cadvisor-service.kube-system.svc.cluster.local:8080 |
+| Node Exporter | node-exporter.kube-system.svc.cluster.local:9100    |
+| Prometheus    | [http://prometheus:9090](http://prometheus:9090)    |
+
+---
+
+## 7. Errors Faced & Fixes
+
+### 🔴 Error 1:
+
+```
+lookup cadvisor: no such host
+```
+
+#### Reason:
+
+Service name was wrong. You wrote:
+
+```
+cadvisor:8080
+```
+
+But actual name was:
+
+```
+cadvisor-service
+```
+
+#### ✅ Fix:
+
+Updated Prometheus config:
+
+```
+cadvisor-service.kube-system.svc.cluster.local:8080
+```
+
+---
+
+### 🔴 Error 2: Port forward failure on 8090
+
+```
+error copying from remote stream...
+```
+
+#### Reason:
+
+Either:
+
+* Port already in use
+* Pod not fully ready
+
+#### ✅ Fix:
+
+Wait for pod running + try different port:
+
+```
+kubectl port-forward svc/grafana 3000:3000
+```
+
+---
+
+## 8. Grafana Setup
+
+### Why Grafana?
+
+Grafana converts Prometheus data → beautiful dashboards.
+
+### Files used
+
+#### `grafana-deploy.yaml`
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:latest
+        ports:
+        - containerPort: 3000
+```
+
+#### `grafana-svc.yaml`
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+spec:
+  type: NodePort
+  selector:
+    app: grafana
+  ports:
+  - port: 3000
+    targetPort: 3000
+    nodePort: 32000
+```
+
+Accessed using:
+
+```bash
+kubectl port-forward svc/grafana 3000:3000
+```
+
+Open in browser:
+
+```
+http://localhost:3000
+```
+
+Login:
+
+```
+admin / admin
+```
+
+---
+
+## 9. Prometheus URL in Grafana
+
+Correct value used:
+
+```
+http://prometheus:9090
+```
+
+Why?
+Because Grafana is inside Kubernetes and talks using Service name.
+
+---
+
+## 10. Dashboards Used
+
+In Grafana → Import:
+
+| Purpose                         | Dashboard ID |
+| ------------------------------- | ------------ |
+| Node Monitoring                 | 1860         |
+| Container Monitoring (cAdvisor) | 14282        |
+
+Used Prometheus as data source.
+
+---
+
+## 11. Final Result Achieved
+
+You successfully built:
+
+✅ Kubernetes Metrics System
+✅ Container Monitoring
+✅ Node Monitoring
+✅ Prometheus Scraping
+✅ Grafana Dashboards
+
+---
+
+If you want, in next message I can also give this **as formatted Word-style content** (headings + points) or **PDF ready format**.
